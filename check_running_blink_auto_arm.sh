@@ -12,7 +12,7 @@ LOG_PATH="/var/log/$APP.py.log"
 CURRENT_DATE=$(date +"%m/%d/%Y, %H:%M:%S")
 
 # needed wide output for ps (check: 'man ps' for your system)
-ps www | grep -v grep | grep $PROJECT_PATH > /dev/null 2>&1
+ps www | grep -v grep | grep $APP_PATH > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     :
 else
