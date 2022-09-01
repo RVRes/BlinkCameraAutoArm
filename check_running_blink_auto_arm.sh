@@ -11,7 +11,7 @@ APP_PATH="$PROJECT_PATH/app/$APP.py"
 LOG_PATH="/var/log/$APP.py.log"
 CURRENT_DATE=$(date +"%m/%d/%Y, %H:%M:%S")
 
-# needed wide output for ps (check: 'man ps' for your system)
+# Wide output for ps is needed. (check: 'man ps' for your system. OPKG syntax. For ubuntu use: ps -eF)
 ps www | grep -v grep | grep $APP_PATH > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     :
