@@ -34,7 +34,8 @@ def blink_cameras_list(connection):
 def ping(host):
     """
     Returns True if host (str) responds to a ping request.
-    Remember that a host may not respond to a ping (ICMP) request even if the host name is valid.
+    Remember that a host may not respond to a ping (ICMP) request
+    even if the host name is valid.
     """
 
     # Option for the number of packets as a function of
@@ -43,7 +44,9 @@ def ping(host):
     # Building the command. Ex: "ping -c 1 google.com"
     command = ['ping', param, '1', host]
 
-    return subprocess.call(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+    return subprocess.call(command,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL) == 0
 
 
 def get_host_alive_check(address: str, attempts: int = 5):
@@ -55,13 +58,15 @@ def get_host_alive_check(address: str, attempts: int = 5):
         nonlocal ping_results
         ping_results.append(ping(address))
         ping_results = ping_results[-attempts:]
-        return True if len(ping_results) < attempts or any(ping_results) else False
+        return (True if len(ping_results) < attempts or any(ping_results)
+                else False)
 
     return inner
 
 
 def get_ip_checks_for_address_list(addresses: list, attempts: int):
-    """Generates list of closure check functions for particular ip. Closure stores state of previous executions."""
+    """Generates list of closure check functions for particular ip.
+    Closure stores state of previous executions."""
     return [get_host_alive_check(ip, attempts) for ip in addresses]
 
 
@@ -80,7 +85,8 @@ def arm_camera(camera_, connection_):
     camera_.arm = True
     sleep(SAFETY_WAIT_BLINK_API)
     connection_.refresh()
-    print(f'{time_now()}: Nobody home. Arming camera. {camera_status(camera_.arm)}')
+    print(f'{time_now()}: Nobody home. '
+          f'Arming camera. {camera_status(camera_.arm)}')
 
 
 def disarm_camera(camera_, connection_):
@@ -88,16 +94,19 @@ def disarm_camera(camera_, connection_):
     camera_.arm = False
     sleep(SAFETY_WAIT_BLINK_API)
     connection_.refresh()
-    print(f'{time_now()}: Somebody returned home. Disarming camera. {camera_status(camera_.arm)}')
+    print(f'{time_now()}: Somebody returned home. '
+          f'Disarming camera. {camera_status(camera_.arm)}')
 
 
-def start_main_loop(username: str, password: str, home_devices_list: list, attempts: int, timedelta: int):
+def start_main_loop(username: str, password: str, home_devices_list: list,
+                    attempts: int, timedelta: int):
     """Arms camera if nobody at home for number if <attempts>.
     Disarms camera when anybody returns home"""
     any_at_home = get_ip_checks_for_address_list(home_devices_list, attempts)
     blink = blink_connect(username, password)
     camera = blink_cameras_list(blink)(0)
-    print(f'{time_now()}: Successfully connected to camera: {camera.name}. {camera_status(camera.arm)}')
+    print(f'{time_now()}: Successfully connected to camera: {camera.name}. '
+          f'{camera_status(camera.arm)}')
 
     while True:
         if not any([check() for check in any_at_home]):  # if nobody home
