@@ -1,3 +1,5 @@
+import asyncio
+
 from blinkpy.blinkpy import Blink
 from blinkpy.auth import Auth
 from time import sleep, localtime, strftime
@@ -5,6 +7,7 @@ import platform  # For getting the operating system name
 import subprocess  # For executing a shell command
 from os import getenv
 from dotenv import load_dotenv
+from telegram import Bot
 
 
 def blink_connect(username_: str, password_: str):
@@ -72,7 +75,7 @@ def get_ip_checks_for_address_list(addresses: list, attempts: int):
 
 def time_now():
     """Return formatted string with local date and time"""
-    return strftime("%m/%d/%Y, %H:%M:%S", localtime())
+    return strftime("%m/%d/%Y %H:%M:%S", localtime())
 
 
 def camera_status(status: bool):
@@ -85,8 +88,10 @@ def arm_camera(camera_, connection_):
     camera_.arm = True
     sleep(SAFETY_WAIT_BLINK_API)
     connection_.refresh()
-    print(f'{time_now()}: Nobody home. '
-          f'Arming camera. {camera_status(camera_.arm)}')
+    msg = (f'{time_now()}: Nobody home. '
+           f'Arming camera. {camera_status(camera_.arm)}')
+    print(msg)
+    send_message(msg)
 
 
 def disarm_camera(camera_, connection_):
@@ -94,8 +99,29 @@ def disarm_camera(camera_, connection_):
     camera_.arm = False
     sleep(SAFETY_WAIT_BLINK_API)
     connection_.refresh()
-    print(f'{time_now()}: Somebody returned home. '
-          f'Disarming camera. {camera_status(camera_.arm)}')
+    msg = (f'{time_now()}: Somebody returned home. '
+           f'Disarming camera. {camera_status(camera_.arm)}')
+    print(msg)
+    send_message(msg)
+
+
+def get_telegram_messenger(bot_token: str, chat_id: str):
+    """
+    Returns send_message function, which is used to send messages to send
+    telegram notifications to specific group or user.
+    :param bot_token: telegram bot token
+    :param chat_id: group or user chat id
+    :return:
+    """
+    async def send_message_coro(message: str):
+        async with bot:
+            await bot.send_message(text=message, chat_id=chat_id)
+
+    def inner(message: str) -> None:
+        asyncio.run(send_message_coro(message))
+
+    bot = Bot(token=bot_token)
+    return inner
 
 
 def start_main_loop(username: str, password: str, home_devices_list: list,
@@ -105,8 +131,10 @@ def start_main_loop(username: str, password: str, home_devices_list: list,
     any_at_home = get_ip_checks_for_address_list(home_devices_list, attempts)
     blink = blink_connect(username, password)
     camera = blink_cameras_list(blink)(0)
-    print(f'{time_now()}: Successfully connected to camera: {camera.name}. '
-          f'{camera_status(camera.arm)}')
+    msg = (f'{time_now()}: Successfully connected to camera: {camera.name}. '
+           f'{camera_status(camera.arm)}')
+    print(msg)
+    send_message(msg)
 
     while True:
         if not any([check() for check in any_at_home]):  # if nobody home
@@ -127,6 +155,10 @@ if __name__ == '__main__':
     USERNAME = getenv('BLINK_CAMERA_AUTO_ARM_USERNAME')
     PASSWORD = getenv('BLINK_CAMERA_AUTO_ARM_PASSWORD')
     DEVICES = getenv('BLINK_CAMERA_AUTO_ARM_DEVICES')
+    TELEGRAM_BOT_TOKEN = getenv('TELEGRAM_BOT_TOKEN')
+    TELEGRAM_CHAT_ID = getenv('TELEGRAM_CHAT_ID')
+
+    send_message = get_telegram_messenger(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
     if USERNAME and PASSWORD and DEVICES:
         DEVICES = list(map(str.strip, DEVICES.split(',')))
