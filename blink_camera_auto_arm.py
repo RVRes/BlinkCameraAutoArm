@@ -2,7 +2,8 @@ import asyncio
 
 from blinkpy.blinkpy import Blink
 from blinkpy.auth import Auth
-from time import sleep, localtime, strftime
+from time import sleep
+from datetime import datetime, timedelta
 import platform  # For getting the operating system name
 import subprocess  # For executing a shell command
 from os import getenv
@@ -75,7 +76,7 @@ def get_ip_checks_for_address_list(addresses: list, attempts: int):
 
 def time_now():
     """Return formatted string with local date and time"""
-    return strftime("%m/%d/%Y %H:%M:%S", localtime())
+    return (datetime.now() - timedelta(hours=0)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def camera_status(status: bool):
