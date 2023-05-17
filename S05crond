@@ -1,0 +1,30 @@
+#!/bin/sh
+# This script is needed to autostart cron job in Entware.
+
+CRON="/opt/sbin/crond"
+
+export PATH=/opt/bin:/opt/sbin:/sbin:/usr/sbin:/bin:/usr/bin
+
+start() {
+	$CRON -L /dev/null
+}
+
+ stop() {
+	killall crond
+}
+
+ case "$1" in
+	start)
+	    start
+	    ;;
+	stop)
+	    stop
+	    ;;
+	restart)
+	    stop
+	    start
+	    ;;
+	*)
+	    echo "Usage: $0 {start|stop}"
+	    ;;
+esac
