@@ -1,8 +1,11 @@
 #!/bin/sh
-# cron script to start app and check it is running
+# Cron script to start app and check it is running.
+# This version is logging output messages in file (/var/log/<script_name>)
+# It's better to use another script that allows to send messages to router
+# system log directly.
 
 # put this task in crontab (crontab -e)
-# * * * * * sh ~/.local/blink_camera_control/app/check_running_blink_auto_arm.sh > /dev/null 2>$1 &
+# * * * * * sh ~/.local/blink_camera_control/app/check_running_blink_auto_arm_file_logging.sh > /dev/null 2>&1 &
 
 PROJECT_PATH=~/.local/blink_camera_control
 APP=blink_camera_auto_arm
@@ -11,7 +14,8 @@ APP_PATH="$PROJECT_PATH/app/$APP.py"
 LOG_PATH="/var/log/$APP.py.log"
 CURRENT_DATE=$(date +"%m/%d/%Y, %H:%M:%S")
 
-# Wide output for ps is needed. (check: 'man ps' for your system. OPKG syntax. For ubuntu use: ps -eF)
+# Wide output for ps is needed.
+# (check: 'man ps' for your system. OPKG syntax. For ubuntu use: ps -eF)
 ps www | grep -v grep | grep $APP_PATH > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     :
