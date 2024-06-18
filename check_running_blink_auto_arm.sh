@@ -12,7 +12,7 @@ APP=blink_camera_auto_arm
 
 APP_PATH="$PROJECT_PATH/$APP.py"
 
-echo "test-logger" | logger -t $APP
+# echo "test-logger" | logger -t $APP
 
 # Wide output for ps is needed.
 # (check: 'man ps' for your system. OPKG syntax. For ubuntu use: ps -eF)
