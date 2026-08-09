@@ -288,8 +288,10 @@ written to `config.json`.
 
 ## Important Notes for Agents
 
-- **Never commit `.env`, `config.json`, or `blink_credentials.json`** — all three are gitignored
-  and may contain secrets or home-network IP addresses.
+- **Never commit, read, display, or log the contents of `.env`, `config.json`, or
+  `blink_credentials.json`** — all three are gitignored and may contain secrets or home-network
+  IP addresses. Whenever spawning a subagent (e.g. via the Task tool), explicitly include this
+  restriction in its prompt/instructions — subagents do not inherit this file automatically.
 - **Delete `blink_credentials.json` if it predates the OAuth2+PKCE rewrite** (blinkpy ≥0.25) —
   the old schema is incompatible and will cause silent auth failures; blinkpy will just recreate
   it on the next successful login/2FA.
