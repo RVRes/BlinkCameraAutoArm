@@ -1,19 +1,36 @@
 #!/bin/sh
 # This script is needed to autostart cron job in Entware.
+#
+# Manages only the crond PID this script itself started (via a PID
+# file), rather than `killall crond` — the router may run other crond
+# instances/services that must not be terminated as a side effect of
+# stopping this one (codereview.md M-4).
 
 CRON="/opt/sbin/crond"
+PID_FILE="/opt/var/run/S05crond.pid"
 
 export PATH=/opt/bin:/opt/sbin:/sbin:/usr/sbin:/bin:/usr/bin
 
 start() {
-	$CRON -L /dev/null
+	if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+		echo "crond already running (pid $(cat "$PID_FILE"))."
+		return 0
+	fi
+	"$CRON" -L /dev/null &
+	echo "$!" > "$PID_FILE"
 }
 
- stop() {
-	killall crond
+stop() {
+	if [ -f "$PID_FILE" ]; then
+		PID=$(cat "$PID_FILE" 2>/dev/null)
+		if [ -n "$PID" ]; then
+			kill "$PID" 2>/dev/null
+		fi
+		rm -f "$PID_FILE"
+	fi
 }
 
- case "$1" in
+case "$1" in
 	start)
 	    start
 	    ;;

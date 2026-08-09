@@ -1,5 +1,5 @@
-from time import sleep, strftime, localtime
 from random import randint
+from time import localtime, sleep, strftime
 
 
 def time_now():
@@ -8,7 +8,7 @@ def time_now():
 
 
 seed = randint(10000, 99999)
-print(f'{time_now()}: Test task is started! Seed: {seed}')
+print(f"{time_now()}: Test task is started! Seed: {seed}")
 while True:
     sleep(15)
-    print(f'{time_now()}: Working! Seed: {seed}')
+    print(f"{time_now()}: Working! Seed: {seed}")

@@ -1,5 +1,13 @@
+config.json
+blink_credentials.json
 .env
 venv
+.venv
 .idea
-.env
-blink_credentials.json
+__pycache__
+*.pyc
+*.tmp
+.*.pid
+.*.lock
+STATUS.md
+PLAN*.md
