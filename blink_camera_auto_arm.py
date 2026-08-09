@@ -264,8 +264,9 @@ async def run_main_loop(
     monitor: PresenceMonitor,
     bot: TelegramBot,
 ) -> None:
-    """Main control loop. Runs concurrently with bot.start() via
-    asyncio.gather().
+    """Main control loop. Runs concurrently with bot.start() as a sibling
+    asyncio task; both are expected to run until cancelled by main()'s
+    shutdown sequence.
     """
     ctx = LoopContext()
     while True:

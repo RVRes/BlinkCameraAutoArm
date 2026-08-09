@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import ipaddress
 import logging
@@ -67,9 +68,23 @@ class TelegramBot:
         self.blink = blink
         self.monitor = monitor
         self._application: Application | None = None
+        # start() must stay alive for the app's lifetime — like
+        # run_main_loop(), it should only end via cancellation, not
+        # merely because polling has finished being *set up*. PTB's
+        # start_polling() itself only blocks until the background
+        # polling task is confirmed running, then returns immediately;
+        # without this event, start() (and thus its asyncio task) would
+        # complete right after that, which main()'s asyncio.wait(...,
+        # return_when=FIRST_COMPLETED) would misread as "the bot task is
+        # done" and tear down the whole app within about a second of
+        # every launch. shutdown() sets this event to let start() return.
+        self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Build Application, register handlers, start polling."""
+        """Build Application, register handlers, start polling, then
+        block until shutdown() is called (or this task is cancelled) —
+        so the task stays alive for the app's lifetime, not just for the
+        duration of setting polling up."""
         application = Application.builder().token(self.token).build()
         application.add_handler(
             CommandHandler(self.BOT_INVOCATION_COMMAND, self.handle_command)
@@ -82,16 +97,24 @@ class TelegramBot:
 
         await application.initialize()
         await application.start()
+        assert application.updater is not None
         await application.updater.start_polling()
         _LOGGER.info("Telegram bot started and polling for updates.")
         await self.send_message("Bot started.")
+        await self._stop_event.wait()
 
     async def shutdown(self) -> None:
         """Stop polling and cleanly release Application/HTTP resources.
 
         Safe to call even if start() was never called or failed partway
         through (idempotent no-op in that case). See codereview.md M-5.
+
+        Also sets the stop event so a still-running start() task returns
+        on its own rather than relying solely on external cancellation —
+        harmless if start()'s task has already been cancelled by the
+        caller (main()'s shutdown sequence does both).
         """
+        self._stop_event.set()
         application = self._application
         if application is None:
             return
@@ -653,6 +676,9 @@ class TelegramBot:
 
     async def send_message(self, text: str) -> None:
         """Send a proactive message to the configured chat."""
+        if self._application is None:
+            _LOGGER.error("Cannot send Telegram message: bot is not started.")
+            return
         try:
             await self._application.bot.send_message(
                 chat_id=self.chat_id, text=text
@@ -662,6 +688,9 @@ class TelegramBot:
 
     async def send_photo(self, text: str, photo: bytes) -> None:
         """Send a proactive photo to the configured chat."""
+        if self._application is None:
+            _LOGGER.error("Cannot send Telegram photo: bot is not started.")
+            return
         try:
             await self._application.bot.send_photo(
                 chat_id=self.chat_id, photo=photo, caption=text
@@ -671,6 +700,9 @@ class TelegramBot:
 
     async def send_video(self, text: str, video: bytes) -> None:
         """Send a proactive video to the configured chat."""
+        if self._application is None:
+            _LOGGER.error("Cannot send Telegram video: bot is not started.")
+            return
         try:
             await self._application.bot.send_video(
                 chat_id=self.chat_id, video=video, caption=text

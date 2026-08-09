@@ -1,7 +1,8 @@
 """Tests for telegram_bot.py — TelegramBot command router + handlers."""
 
+import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -530,3 +531,84 @@ async def test_unknown_subcommand_sends_error_and_help(
     context = await _send_command(bot, ["bogus"])
     message = context.bot.send_message.call_args.kwargs["text"]
     assert "unknown" in message.lower() or "help" in message.lower()
+
+
+# --- start()/shutdown() lifecycle ---
+#
+# Regression coverage for a real bug: PTB's start_polling() only blocks
+# until its background polling task is confirmed running, then returns
+# immediately — it does NOT block for the lifetime of polling. Before
+# start() awaited an internal stop event, its coroutine (and thus the
+# asyncio.Task wrapping it in main()) completed within a fraction of a
+# second of every launch. main()'s asyncio.wait(..., return_when=
+# FIRST_COMPLETED) then misread that early, successful completion as
+# "the bot task is done" — indistinguishable from a crash or a shutdown
+# request — and tore down the whole app almost immediately after every
+# start. On the router, this meant the cron watchdog would relaunch the
+# app roughly every minute, forever, instead of it running continuously.
+#
+# These tests assert the actual contract main() depends on: start()
+# must stay running (not just "not raise") until shutdown() is called
+# or the task is cancelled — exactly like run_main_loop().
+
+
+def _make_mock_application() -> MagicMock:
+    application = MagicMock()
+    application.initialize = AsyncMock()
+    application.start = AsyncMock()
+    application.stop = AsyncMock()
+    application.shutdown = AsyncMock()
+    application.updater = MagicMock()
+    application.updater.start_polling = AsyncMock()
+    application.updater.stop = AsyncMock()
+    application.bot.send_message = AsyncMock()
+    return application
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_return_after_polling_begins(
+    bot: TelegramBot,
+) -> None:
+    """start() must still be running well after start_polling() has
+    returned — it must not complete just because setup finished."""
+    mock_application = _make_mock_application()
+    with patch("telegram_bot.Application.builder") as mock_builder:
+        mock_builder.return_value.token.return_value.build.return_value = (
+            mock_application
+        )
+        task = asyncio.create_task(bot.start())
+        try:
+            # Give start() every chance to (incorrectly) return on its
+            # own after setup completes.
+            await asyncio.sleep(0.05)
+            assert not task.done(), (
+                "start() returned after polling was set up instead of "
+                "staying alive for the app's lifetime — this is the "
+                "exact bug that caused the app to exit ~1 second after "
+                "every launch."
+            )
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+@pytest.mark.asyncio
+async def test_shutdown_lets_a_running_start_task_return(
+    bot: TelegramBot,
+) -> None:
+    """shutdown() must let an in-flight start() task finish on its own
+    (via the stop event) rather than requiring external cancellation."""
+    mock_application = _make_mock_application()
+    with patch("telegram_bot.Application.builder") as mock_builder:
+        mock_builder.return_value.token.return_value.build.return_value = (
+            mock_application
+        )
+        task = asyncio.create_task(bot.start())
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        await bot.shutdown()
+        await asyncio.wait_for(task, timeout=1)
+        assert task.done()
+        assert task.exception() is None
