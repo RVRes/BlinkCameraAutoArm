@@ -22,13 +22,16 @@ from state import AppState
 _LOGGER = logging.getLogger(__name__)
 
 _HELP_TEXT = (
-    "Commands (all under /camerabot):\n"
+    "Commands (all under /cambot):\n"
     "help\n"
     "status\n"
     "enable | disable\n"
+    "arm [name]\n"
+    "disarm [name]\n"
     "cameras list\n"
     "cameras add <name>\n"
     "cameras remove <name>\n"
+    "cameras refresh\n"
     "ips list\n"
     "ips add <ip>\n"
     "ips remove <ip>\n"
@@ -45,7 +48,7 @@ _HELP_TEXT = (
 class TelegramBot:
     """Telegram bot with authorization gate and noun-verb command routing."""
 
-    BOT_INVOCATION_COMMAND = "camerabot"
+    BOT_INVOCATION_COMMAND = "cambot"
 
     def __init__(
         self,
@@ -107,7 +110,7 @@ class TelegramBot:
         """Stop polling and cleanly release Application/HTTP resources.
 
         Safe to call even if start() was never called or failed partway
-        through (idempotent no-op in that case). See codereview.md M-5.
+        through (idempotent no-op in that case).
 
         Also sets the stop event so a still-running start() task returns
         on its own rather than relying solely on external cancellation —
@@ -130,7 +133,7 @@ class TelegramBot:
     async def _on_error(self, update: object, context: CallbackContext) -> None:
         """PTB error handler — logs unhandled exceptions from handlers
         instead of relying on library defaults, and best-effort informs
-        the user their command failed. See codereview.md M-5."""
+        the user their command failed."""
         _LOGGER.error(
             "Unhandled exception while processing update %s",
             update,
@@ -167,7 +170,7 @@ class TelegramBot:
     async def handle_command(
         self, update: Update, context: CallbackContext
     ) -> None:
-        """Single CommandHandler for 'camerabot'. Routes based on args."""
+        """Single CommandHandler for 'cambot'. Routes based on args."""
         if not self._is_authorized(update):
             return
 
@@ -184,6 +187,8 @@ class TelegramBot:
             "status": lambda: self._cmd_status(context),
             "enable": lambda: self._cmd_enable(context),
             "disable": lambda: self._cmd_disable(context),
+            "arm": lambda: self._cmd_arm(context, rest),
+            "disarm": lambda: self._cmd_disarm(context, rest),
             "cameras": lambda: self._cmd_cameras(context, rest),
             "ips": lambda: self._cmd_ips(context, rest),
             "2fa": lambda: self._cmd_2fa(context, rest),
@@ -209,10 +214,10 @@ class TelegramBot:
         if not self._is_authorized(update):
             return
 
-    # --- Transactional config persistence (codereview.md H-4) ---
+    # --- Transactional config persistence ---
 
     def _persist_config_change(
-        self, context: CallbackContext, **field_updates: object
+        self, **field_updates: object
     ) -> AppConfig | None:
         """Build a candidate AppConfig with `field_updates` applied,
         validate + persist it via Config.save(), and only on success
@@ -222,7 +227,10 @@ class TelegramBot:
         if validation/persistence failed — in which case `self.app_cfg`
         is left completely untouched, so in-memory state can never drift
         from what's on disk. Callers are responsible for awaiting a
-        reply in the None case using the raised error's message.
+        reply in the None case using the raised error's message. Takes
+        no CallbackContext — callers that have one (Telegram command
+        handlers) reply separately; this also lets non-command callers
+        (e.g. the main loop's stale-camera reconciliation) reuse it.
         """
         candidate = dataclasses.replace(self.app_cfg, **field_updates)
         try:
@@ -249,10 +257,7 @@ class TelegramBot:
 
         lines = [
             f"App: {'enabled' if state.is_app_enabled else 'disabled'}",
-            (
-                "Motion alerts: "
-                f"{'on' if cfg.motion_alerts_enabled else 'off'}"
-            ),
+            (f"Motion alerts: {'on' if cfg.motion_alerts_enabled else 'off'}"),
             (
                 "Camera auto-arm: "
                 f"{', '.join(cfg.controlled_cameras) or 'none configured'}"
@@ -261,20 +266,19 @@ class TelegramBot:
         ]
 
         if state.is_2fa_pending:
-            lines.append("Blink API: 2FA pending — send /camerabot 2fa <code>")
+            lines.append("Blink API: 2FA pending — send /cambot 2fa <code>")
         elif not self.blink.is_connected:
             lines.append("Blink API: not connected")
         else:
-            lines.append("Cameras (all account cameras):")
+            lines.append("Cameras:")
             for cam in self.blink.list_all_cameras():
                 controlled = cam.name in cfg.controlled_cameras
-                lines.append(
-                    f"  {cam.name} — "
-                    f"{'armed' if cam.armed else 'disarmed'} | "
-                    f"{'online' if cam.online else 'offline'} | "
-                    f"battery: {cam.battery} | "
-                    f"controlled: {'yes' if controlled else 'no'}"
-                )
+                lines.append("")
+                lines.append(f"  {cam.name}")
+                lines.append(f"    armed: {'yes' if cam.armed else 'no'}")
+                lines.append(f"    online: {'yes' if cam.online else 'no'}")
+                lines.append(f"    battery: {cam.battery}")
+                lines.append(f"    controlled: {'yes' if controlled else 'no'}")
 
         lines.append("")
         lines.append("IPs:")
@@ -303,8 +307,8 @@ class TelegramBot:
     @staticmethod
     def _elapsed_text(timestamp: float | None) -> str:
         """Format time elapsed since `timestamp` as 'Xd XXh XXm ago', or
-        'Never' if `timestamp` is None (codereview.md L-3 health signal —
-        shared by the arm/disarm and main-loop-iteration status lines)."""
+        'Never' if `timestamp` is None — shared by the arm/disarm and
+        main-loop-iteration status lines."""
         if not timestamp:
             return "Never"
         elapsed = time.time() - timestamp
@@ -325,13 +329,91 @@ class TelegramBot:
         _LOGGER.info("Auto-arming disabled via Telegram command.")
         await self._reply(context, "Auto-arming application disabled.")
 
+    async def _cmd_arm(self, context: CallbackContext, args: list[str]) -> None:
+        """Manually arm one or all controlled cameras, independent of
+        is_app_enabled — bypasses the main loop entirely."""
+        await self._manual_arm_disarm(context, args, armed=True)
+
+    async def _cmd_disarm(
+        self, context: CallbackContext, args: list[str]
+    ) -> None:
+        """Manually disarm one or all controlled cameras, independent of
+        is_app_enabled — bypasses the main loop entirely."""
+        await self._manual_arm_disarm(context, args, armed=False)
+
+    async def _manual_arm_disarm(
+        self, context: CallbackContext, args: list[str], *, armed: bool
+    ) -> None:
+        """Shared implementation for _cmd_arm/_cmd_disarm.
+
+        With a camera name argument, targets only that camera (must be
+        in controlled_cameras). With no argument, targets every camera
+        currently in controlled_cameras. Mirrors run_iteration()'s
+        auto-arm/disarm branch: calls BlinkService directly and updates
+        state.commanded_camera_states + state.time_of_last_arm_change,
+        so a manual arm/disarm is indistinguishable from an automatic
+        one from the perspective of "what does the API say is armed
+        right now" — and is therefore left alone by the main loop on its
+        next tick unless presence flips.
+        """
+        verb = "arm" if armed else "disarm"
+        name = " ".join(args).strip()
+
+        if name:
+            if name not in self.app_cfg.controlled_cameras:
+                await self._reply(
+                    context,
+                    f"Camera '{name}' is not in the auto-arm list.",
+                )
+                return
+            names = [name]
+        else:
+            names = list(self.app_cfg.controlled_cameras)
+            if not names:
+                await self._reply(context, "No controlled cameras configured.")
+                return
+
+        if not self.blink.is_connected:
+            await self._reply(context, "Not connected to Blink API.")
+            return
+
+        if armed:
+            results = await self.blink.arm_cameras(names)
+        else:
+            results = await self.blink.disarm_cameras(names)
+
+        succeeded = [n for n in names if results.get(n)]
+        failed = [n for n in names if not results.get(n)]
+
+        if succeeded:
+            now = time.time()
+            for n in succeeded:
+                self.state.commanded_camera_states[n] = armed
+            self.state.time_of_last_arm_change = now
+            _LOGGER.info(
+                "Manually %sed camera(s) via Telegram command: %s",
+                verb,
+                ", ".join(succeeded),
+            )
+
+        lines = []
+        if succeeded:
+            lines.append(f"{verb.capitalize()}ed: {', '.join(succeeded)}.")
+        if failed:
+            lines.append(
+                f"Not found in Blink account, skipped: {', '.join(failed)}."
+            )
+        await self._reply(context, "\n".join(lines))
+
     async def _cmd_cameras(
         self, context: CallbackContext, args: list[str]
     ) -> None:
-        """Route 'cameras' noun to its list/add/remove verb handler."""
+        """Route 'cameras' noun to its list/add/remove/refresh verb
+        handler."""
         if not args:
             await self._reply(
-                context, f"Usage: cameras list|add|remove\n\n{_HELP_TEXT}"
+                context,
+                f"Usage: cameras list|add|remove|refresh\n\n{_HELP_TEXT}",
             )
             return
 
@@ -344,6 +426,8 @@ class TelegramBot:
             await self._cameras_add(context, name)
         elif verb == "remove":
             await self._cameras_remove(context, name)
+        elif verb == "refresh":
+            await self._cameras_refresh(context)
         else:
             await self._reply(
                 context, f"Unknown 'cameras' subcommand '{verb}'."
@@ -391,7 +475,6 @@ class TelegramBot:
 
         if name not in self.app_cfg.controlled_cameras:
             updated = self._persist_config_change(
-                context,
                 controlled_cameras=[*self.app_cfg.controlled_cameras, name],
             )
             if updated is None:
@@ -419,9 +502,7 @@ class TelegramBot:
             return
 
         remaining = [c for c in self.app_cfg.controlled_cameras if c != name]
-        updated = self._persist_config_change(
-            context, controlled_cameras=remaining
-        )
+        updated = self._persist_config_change(controlled_cameras=remaining)
         if updated is None:
             await self._reply(
                 context,
@@ -429,6 +510,93 @@ class TelegramBot:
             )
             return
         await self._reply(context, f"Camera '{name}' removed from auto-arm.")
+
+    async def _cameras_refresh(self, context: CallbackContext) -> None:
+        """Force a live Blink refresh (bypassing the main loop's
+        periodic cadence) and reconcile controlled_cameras against the
+        account's current camera names, replying with a summary of any
+        stale camera(s) removed as a result."""
+        if not self.blink.is_connected:
+            await self._reply(
+                context,
+                "Not connected to Blink API — cannot refresh cameras.",
+            )
+            return
+
+        try:
+            await self.blink.refresh()
+        except Exception:
+            _LOGGER.exception(
+                "Failed to refresh Blink data via 'cameras refresh'."
+            )
+            await self._reply(context, "Failed to refresh from Blink API.")
+            return
+
+        stale = self.reconcile_stale_cameras()
+        if stale:
+            await self._reply(
+                context,
+                f"Refreshed. Removed stale camera(s): {', '.join(stale)}. "
+                "If a camera was renamed rather than deleted, re-add it "
+                "under its new name: cameras add <name>.",
+            )
+        else:
+            await self._reply(context, "Refreshed. No changes.")
+
+    def reconcile_stale_cameras(self) -> list[str]:
+        """Remove any `controlled_cameras` entries no longer present on
+        the Blink account (e.g. a camera renamed or deleted via the
+        Blink app), clearing their stray per-camera runtime state.
+
+        Called after any refresh — both the main loop's own periodic
+        `blink.refresh()` and the on-demand `cameras refresh` command —
+        so a silent rename doesn't quietly disable auto-arm coverage
+        for that camera without the user noticing. This does NOT try to
+        match old name -> new name (e.g. via camera_id); re-adding the
+        renamed camera under its new name is a manual follow-up step
+        for the user.
+
+        Returns the list of removed camera names (empty if none were
+        stale). Callers are responsible for notifying the user via
+        whichever channel fits the call site (a proactive message from
+        the main loop, or a direct reply from the `cameras refresh`
+        command) — this method itself never sends a Telegram message,
+        to avoid double-notifying for the same event.
+        """
+        if not self.blink.is_connected:
+            return []
+
+        current_names = {cam.name for cam in self.blink.list_all_cameras()}
+        stale = [
+            name
+            for name in self.app_cfg.controlled_cameras
+            if name not in current_names
+        ]
+        if not stale:
+            return []
+
+        remaining = [
+            name
+            for name in self.app_cfg.controlled_cameras
+            if name not in stale
+        ]
+        updated = self._persist_config_change(controlled_cameras=remaining)
+        if updated is None:
+            _LOGGER.error(
+                "Failed to persist removal of stale camera(s): %s",
+                ", ".join(stale),
+            )
+            return []
+
+        for name in stale:
+            self.state.commanded_camera_states.pop(name, None)
+            self.state.camera_armed_status.pop(name, None)
+
+        _LOGGER.info(
+            "Removed stale camera(s) no longer on Blink account: %s",
+            ", ".join(stale),
+        )
+        return stale
 
     async def _cmd_ips(self, context: CallbackContext, args: list[str]) -> None:
         """Route 'ips' noun to its list/add/remove verb handler."""
@@ -478,7 +646,7 @@ class TelegramBot:
 
         if ip not in self.app_cfg.monitored_ips:
             updated = self._persist_config_change(
-                context, monitored_ips=[*self.app_cfg.monitored_ips, ip]
+                monitored_ips=[*self.app_cfg.monitored_ips, ip]
             )
             if updated is None:
                 await self._reply(
@@ -503,7 +671,7 @@ class TelegramBot:
             return
 
         remaining = [i for i in self.app_cfg.monitored_ips if i != ip]
-        updated = self._persist_config_change(context, monitored_ips=remaining)
+        updated = self._persist_config_change(monitored_ips=remaining)
         if updated is None:
             await self._reply(
                 context, "Failed to save configuration — IP was not removed."
@@ -539,6 +707,10 @@ class TelegramBot:
             await self._reply(context, "Not connected to Blink API.")
             return
 
+        if not self.blink.has_camera(name):
+            await self._reply(context, f"No camera named '{name}' found.")
+            return
+
         image = await self.blink.snapshot(name)
         if image is None:
             await self._reply(
@@ -560,6 +732,10 @@ class TelegramBot:
             await self._reply(context, "Not connected to Blink API.")
             return
 
+        if not self.blink.has_camera(name):
+            await self._reply(context, f"No camera named '{name}' found.")
+            return
+
         clip = await self.blink.get_latest_clip(name)
         if clip is None:
             await self._reply(
@@ -578,9 +754,7 @@ class TelegramBot:
             return
 
         enabled = verb == "on"
-        updated = self._persist_config_change(
-            context, motion_alerts_enabled=enabled
-        )
+        updated = self._persist_config_change(motion_alerts_enabled=enabled)
         if updated is None:
             await self._reply(context, "Failed to save configuration.")
             return
@@ -593,7 +767,7 @@ class TelegramBot:
     ) -> None:
         """Show or update ping_interval_seconds / absence_checks — the
         two mutable numeric settings previously only changeable by
-        editing config.json offline (see codereview.md M-6)."""
+        editing config.json offline."""
         if not args:
             await self._reply(
                 context,
@@ -658,7 +832,7 @@ class TelegramBot:
             await self._reply(context, f"'{args[0]}' is not an integer.")
             return
 
-        updated = self._persist_config_change(context, **{field_name: value})
+        updated = self._persist_config_change(**{field_name: value})
         if updated is None:
             await self._reply(
                 context,

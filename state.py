@@ -18,9 +18,9 @@ class AppState:
     camera_armed_status: dict[str, bool] = field(default_factory=dict)
     commanded_camera_states: dict[str, bool] = field(default_factory=dict)
     time_of_last_arm_change: float | None = None
-    # Health signal (codereview.md L-3): timestamp of the most recent
-    # main-loop iteration that actually ran (app enabled), so a stalled
-    # loop can be distinguished from "process alive but wedged" via
-    # /camerabot status — the watchdog only confirms the process exists,
-    # not that it's making progress.
+    # Health signal: timestamp of the most recent main-loop iteration
+    # that actually ran (app enabled), so a stalled loop can be
+    # distinguished from "process alive but wedged" via /cambot
+    # status — the watchdog only confirms the process exists, not that
+    # it's making progress.
     time_of_last_iteration: float | None = None

@@ -48,8 +48,16 @@ def mock_blink_service() -> MagicMock:
     svc = MagicMock()
     svc.is_connected = True
     svc.list_all_cameras = MagicMock(return_value=[])
+    svc.has_camera = MagicMock(return_value=True)
     svc.snapshot = AsyncMock(return_value=None)
     svc.get_latest_clip = AsyncMock(return_value=None)
+    svc.refresh = AsyncMock()
+    svc.arm_cameras = AsyncMock(
+        side_effect=lambda names: dict.fromkeys(names, True)
+    )
+    svc.disarm_cameras = AsyncMock(
+        side_effect=lambda names: dict.fromkeys(names, True)
+    )
     return svc
 
 
@@ -213,8 +221,7 @@ async def test_status_shows_2fa_pending_instead_of_not_connected(
     bot: TelegramBot, app_state: AppState, mock_blink_service: MagicMock
 ) -> None:
     """When a 2FA challenge is outstanding, status must say so rather
-    than the more generic (and less actionable) 'not connected' —
-    codereview.md L-3 observability improvement."""
+    than the more generic (and less actionable) 'not connected'."""
     app_state.is_2fa_pending = True
     mock_blink_service.is_connected = False
     context = await _send_command(bot, ["status"])
@@ -242,6 +249,39 @@ async def test_status_shows_last_iteration_elapsed_time(
     assert "ago" in message.lower()
 
 
+@pytest.mark.asyncio
+async def test_status_camera_section_uses_multiline_layout(
+    bot: TelegramBot, app_config: AppConfig, mock_blink_service: MagicMock
+) -> None:
+    """Each camera's status must be rendered as a blank line followed by
+    the camera name, then one indented attribute per line — not the old
+    single pipe-delimited line — so the section is readable on mobile
+    Telegram clients."""
+    app_config.controlled_cameras = ["Front Door"]
+    mock_blink_service.list_all_cameras.return_value = [
+        CameraInfo(
+            name="Front Door",
+            camera_id="1",
+            network_id="10",
+            product_type="catalina",
+            online=True,
+            armed=True,
+            battery="ok",
+        )
+    ]
+    context = await _send_command(bot, ["status"])
+    message = context.bot.send_message.call_args.kwargs["text"]
+    expected_block = (
+        "\n  Front Door\n"
+        "    armed: yes\n"
+        "    online: yes\n"
+        "    battery: ok\n"
+        "    controlled: yes"
+    )
+    assert expected_block in message
+    assert "|" not in message
+
+
 # --- enable / disable ---
 
 
@@ -261,6 +301,151 @@ async def test_disable_sets_state_disabled(
     app_state.is_app_enabled = True
     await _send_command(bot, ["disable"])
     assert app_state.is_app_enabled is False
+
+
+# --- manual arm / disarm ---
+
+
+@pytest.mark.asyncio
+async def test_arm_no_name_arms_all_controlled_cameras(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door", "Backyard"]
+    context = await _send_command(bot, ["arm"])
+    mock_blink_service.arm_cameras.assert_awaited_once_with(
+        ["Front Door", "Backyard"]
+    )
+    assert app_state.commanded_camera_states == {
+        "Front Door": True,
+        "Backyard": True,
+    }
+    assert app_state.time_of_last_arm_change is not None
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "Front Door" in message and "Backyard" in message
+
+
+@pytest.mark.asyncio
+async def test_arm_with_name_arms_only_that_camera(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door", "Backyard"]
+    await _send_command(bot, ["arm", "Backyard"])
+    mock_blink_service.arm_cameras.assert_awaited_once_with(["Backyard"])
+    assert app_state.commanded_camera_states == {"Backyard": True}
+
+
+@pytest.mark.asyncio
+async def test_arm_unknown_camera_name_rejected(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door"]
+    context = await _send_command(bot, ["arm", "Nonexistent"])
+    mock_blink_service.arm_cameras.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "not in the auto-arm list" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_disarm_no_name_disarms_all_controlled_cameras(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door", "Backyard"]
+    context = await _send_command(bot, ["disarm"])
+    mock_blink_service.disarm_cameras.assert_awaited_once_with(
+        ["Front Door", "Backyard"]
+    )
+    assert app_state.commanded_camera_states == {
+        "Front Door": False,
+        "Backyard": False,
+    }
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "Front Door" in message and "Backyard" in message
+
+
+@pytest.mark.asyncio
+async def test_disarm_with_name_disarms_only_that_camera(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door", "Backyard"]
+    await _send_command(bot, ["disarm", "Front Door"])
+    mock_blink_service.disarm_cameras.assert_awaited_once_with(["Front Door"])
+    assert app_state.commanded_camera_states == {"Front Door": False}
+
+
+@pytest.mark.asyncio
+async def test_arm_no_controlled_cameras_configured(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    context = await _send_command(bot, ["arm"])
+    mock_blink_service.arm_cameras.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "no controlled cameras" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_arm_not_gated_on_is_app_enabled(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    """/cambot disable followed by /cambot arm must still work — arm is
+    not gated on is_app_enabled."""
+    app_config.controlled_cameras = ["Front Door"]
+    await _send_command(bot, ["disable"])
+    assert app_state.is_app_enabled is False
+    await _send_command(bot, ["arm"])
+    mock_blink_service.arm_cameras.assert_awaited_once_with(["Front Door"])
+    assert app_state.commanded_camera_states == {"Front Door": True}
+
+
+@pytest.mark.asyncio
+async def test_arm_when_not_connected(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    mock_blink_service: MagicMock,
+) -> None:
+    app_config.controlled_cameras = ["Front Door"]
+    mock_blink_service.is_connected = False
+    context = await _send_command(bot, ["arm"])
+    mock_blink_service.arm_cameras.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "not connected" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_arm_camera_not_found_in_account_reports_skip(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+) -> None:
+    """A controlled-camera name that Blink no longer recognizes (e.g.
+    renamed/deleted) must be reported as skipped, not silently
+    succeeded, and must not update commanded_camera_states."""
+    app_config.controlled_cameras = ["Stale Camera"]
+    mock_blink_service.arm_cameras = AsyncMock(
+        return_value={"Stale Camera": False}
+    )
+    context = await _send_command(bot, ["arm"])
+    assert app_state.commanded_camera_states == {}
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "stale camera" in message.lower()
+    assert "skipped" in message.lower()
 
 
 # --- cameras list/add/remove ---
@@ -366,6 +551,120 @@ async def test_cameras_add_missing_name_shows_usage(bot: TelegramBot) -> None:
     assert "usage" in message.lower()
 
 
+# --- cameras refresh + stale-camera reconciliation (item 9) ---
+
+
+@pytest.mark.asyncio
+async def test_cameras_refresh_forces_live_refresh(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    """cameras refresh must call blink.refresh() directly, independent
+    of the main loop's periodic cadence."""
+    await _send_command(bot, ["cameras", "refresh"])
+    mock_blink_service.refresh.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cameras_refresh_when_not_connected(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    mock_blink_service.is_connected = False
+    context = await _send_command(bot, ["cameras", "refresh"])
+    mock_blink_service.refresh.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "not connected" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_cameras_refresh_reports_no_changes_when_nothing_stale(
+    bot: TelegramBot, app_config: AppConfig, mock_blink_service: MagicMock
+) -> None:
+    app_config.controlled_cameras = ["Backyard"]
+    mock_blink_service.list_all_cameras.return_value = [
+        CameraInfo(
+            name="Backyard",
+            camera_id="1",
+            network_id="10",
+            product_type="catalina",
+            online=True,
+            armed=True,
+            battery="ok",
+        )
+    ]
+    context = await _send_command(bot, ["cameras", "refresh"])
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "no changes" in message.lower()
+    assert app_config.controlled_cameras == ["Backyard"]
+
+
+@pytest.mark.asyncio
+async def test_cameras_refresh_removes_stale_camera_and_reports(
+    bot: TelegramBot,
+    app_config: AppConfig,
+    app_state: AppState,
+    mock_blink_service: MagicMock,
+    mock_config: MagicMock,
+) -> None:
+    """A camera renamed/deleted on the Blink side must be removed from
+    controlled_cameras (persisted) after a forced refresh, with the
+    stale name(s) reported in the command's reply."""
+    app_config.controlled_cameras = ["Old Name", "Backyard"]
+    app_state.commanded_camera_states = {"Old Name": True, "Backyard": False}
+    app_state.camera_armed_status = {"Old Name": True, "Backyard": False}
+    mock_blink_service.list_all_cameras.return_value = [
+        CameraInfo(
+            name="Backyard",
+            camera_id="1",
+            network_id="10",
+            product_type="catalina",
+            online=True,
+            armed=False,
+            battery="ok",
+        )
+    ]
+
+    context = await _send_command(bot, ["cameras", "refresh"])
+
+    assert app_config.controlled_cameras == ["Backyard"]
+    assert "Old Name" not in app_state.commanded_camera_states
+    assert "Old Name" not in app_state.camera_armed_status
+    mock_config.save.assert_called_once_with(app_config)
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "old name" in message.lower()
+    assert "removed" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_cameras_refresh_failure_reports_error(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    mock_blink_service.refresh.side_effect = RuntimeError("boom")
+    context = await _send_command(bot, ["cameras", "refresh"])
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "failed" in message.lower()
+
+
+def test_reconcile_stale_cameras_when_not_connected_returns_empty(
+    bot: TelegramBot, app_config: AppConfig, mock_blink_service: MagicMock
+) -> None:
+    """Reconciliation must be a safe no-op when not connected — e.g.
+    called defensively from the main loop after a failed refresh."""
+    app_config.controlled_cameras = ["Backyard"]
+    mock_blink_service.is_connected = False
+
+    stale = bot.reconcile_stale_cameras()
+
+    assert stale == []
+    assert app_config.controlled_cameras == ["Backyard"]
+
+
+def test_reconcile_stale_cameras_no_controlled_cameras_returns_empty(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    stale = bot.reconcile_stale_cameras()
+    assert stale == []
+
+
 # --- ips list/add/remove ---
 
 
@@ -466,6 +765,23 @@ async def test_snapshot_none_sends_error(
     context = await _send_command(bot, ["snapshot", "Backyard"])
     context.bot.send_photo.assert_not_awaited()
     context.bot.send_message.assert_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "could not get snapshot" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_unknown_camera_name_sends_not_found(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    """A nonexistent camera name must get a distinct 'not found' message,
+    not the generic 'could not get snapshot' wording used when a real
+    camera simply has no snapshot available yet."""
+    mock_blink_service.has_camera.return_value = False
+    context = await _send_command(bot, ["snapshot", "Nonexistent"])
+    mock_blink_service.snapshot.assert_not_awaited()
+    context.bot.send_photo.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert message == "No camera named 'Nonexistent' found."
 
 
 @pytest.mark.asyncio
@@ -496,6 +812,23 @@ async def test_clip_none_sends_error(
     context = await _send_command(bot, ["clip", "Backyard"])
     context.bot.send_video.assert_not_awaited()
     context.bot.send_message.assert_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert "no clip available" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_clip_unknown_camera_name_sends_not_found(
+    bot: TelegramBot, mock_blink_service: MagicMock
+) -> None:
+    """A nonexistent camera name must get a distinct 'not found' message,
+    not the generic 'no clip available' wording used when a real camera
+    simply has no clip available yet."""
+    mock_blink_service.has_camera.return_value = False
+    context = await _send_command(bot, ["clip", "Nonexistent"])
+    mock_blink_service.get_latest_clip.assert_not_awaited()
+    context.bot.send_video.assert_not_awaited()
+    message = context.bot.send_message.call_args.kwargs["text"]
+    assert message == "No camera named 'Nonexistent' found."
 
 
 # --- alerts on/off ---

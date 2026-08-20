@@ -4,7 +4,7 @@
 # Manages only the crond PID this script itself started (via a PID
 # file), rather than `killall crond` — the router may run other crond
 # instances/services that must not be terminated as a side effect of
-# stopping this one (codereview.md M-4).
+# stopping this one.
 
 CRON="/opt/sbin/crond"
 PID_FILE="/opt/var/run/S05crond.pid"

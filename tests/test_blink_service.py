@@ -205,6 +205,16 @@ async def test_submit_2fa_code_failure_returns_false() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_2fa_code_without_connection_raises_runtime_error() -> (
+    None
+):
+    service = BlinkService("user@example.com", "pw")
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        await service.submit_2fa_code("123456")
+
+
+@pytest.mark.asyncio
 async def test_save_credentials_calls_blink_save() -> None:
     service = BlinkService("user@example.com", "pw")
     blink = _make_blink_mock()
@@ -213,6 +223,16 @@ async def test_save_credentials_calls_blink_save() -> None:
     await service.save_credentials()
 
     blink.save.assert_awaited_once_with(BlinkService.CREDENTIALS_FILE)
+
+
+@pytest.mark.asyncio
+async def test_save_credentials_without_connection_raises_runtime_error() -> (
+    None
+):
+    service = BlinkService("user@example.com", "pw")
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        await service.save_credentials()
 
 
 def _make_camera(name, arm=True, online=True, battery="ok"):
@@ -247,6 +267,13 @@ def test_list_all_cameras_returns_camera_info() -> None:
             battery="ok",
         )
     ]
+
+
+def test_list_all_cameras_without_connection_raises_runtime_error() -> None:
+    service = BlinkService("user@example.com", "pw")
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        service.list_all_cameras()
 
 
 def test_list_all_cameras_coerces_unknown_arm_string_to_false() -> None:
@@ -340,38 +367,103 @@ async def test_snapshot_no_cached_image_returns_none() -> None:
     assert result is None
 
 
+def _make_video_item(device_name, created_at, media, deleted=False) -> dict:
+    return {
+        "device_name": device_name,
+        "created_at": created_at,
+        "media": media,
+        "deleted": deleted,
+    }
+
+
 @pytest.mark.asyncio
 async def test_get_latest_clip_returns_bytes_of_most_recent() -> None:
+    """get_latest_clip() must query Blink's cloud video-list metadata —
+    not the local, short-lived camera.recent_clips cache — so it can't
+    go stale between blinkpy's own refresh/expiry cycles."""
     service = BlinkService("user@example.com", "pw")
     cam = _make_camera("Backyard")
-    cam.recent_clips = [
-        {"time": "2024-01-01T00:00:00", "clip": "url1"},
-        {"time": "2024-01-02T00:00:00", "clip": "url2"},
-    ]
+    cam.recent_clips = []  # deliberately empty/stale to prove it's unused
     response = MagicMock()
     response.status = 200
     response.read = AsyncMock(return_value=b"videobytes")
     cam.get_video_clip = AsyncMock(return_value=response)
     blink = _make_blink_mock(cameras={"Backyard": cam})
+    blink.urls = MagicMock(base_url="https://rest.example.com")
+    blink.get_videos_metadata = AsyncMock(
+        return_value=[
+            _make_video_item("Backyard", "2024-01-01T00:00:00+00:00", "/m1"),
+            _make_video_item("Backyard", "2024-01-02T00:00:00+00:00", "/m2"),
+            _make_video_item("Garage", "2024-01-03T00:00:00+00:00", "/m3"),
+        ]
+    )
     service._blink = blink
 
     result = await service.get_latest_clip("Backyard")
 
-    cam.get_video_clip.assert_awaited_once_with(url="url2")
+    cam.get_video_clip.assert_awaited_once_with(
+        url="https://rest.example.com/m2"
+    )
     assert result == b"videobytes"
 
 
 @pytest.mark.asyncio
-async def test_get_latest_clip_empty_recent_clips_returns_none() -> None:
+async def test_get_latest_clip_ignores_deleted_videos() -> None:
     service = BlinkService("user@example.com", "pw")
     cam = _make_camera("Backyard")
-    cam.recent_clips = []
+    response = MagicMock()
+    response.status = 200
+    response.read = AsyncMock(return_value=b"videobytes")
+    cam.get_video_clip = AsyncMock(return_value=response)
     blink = _make_blink_mock(cameras={"Backyard": cam})
+    blink.urls = MagicMock(base_url="https://rest.example.com")
+    blink.get_videos_metadata = AsyncMock(
+        return_value=[
+            _make_video_item(
+                "Backyard", "2024-01-02T00:00:00+00:00", "/newer", deleted=True
+            ),
+            _make_video_item("Backyard", "2024-01-01T00:00:00+00:00", "/older"),
+        ]
+    )
+    service._blink = blink
+
+    result = await service.get_latest_clip("Backyard")
+
+    cam.get_video_clip.assert_awaited_once_with(
+        url="https://rest.example.com/older"
+    )
+    assert result == b"videobytes"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_clip_no_videos_for_camera_returns_none() -> None:
+    service = BlinkService("user@example.com", "pw")
+    cam = _make_camera("Backyard")
+    blink = _make_blink_mock(cameras={"Backyard": cam})
+    blink.urls = MagicMock(base_url="https://rest.example.com")
+    blink.get_videos_metadata = AsyncMock(
+        return_value=[_make_video_item("Garage", "2024-01-01T00:00:00", "/m1")]
+    )
     service._blink = blink
 
     result = await service.get_latest_clip("Backyard")
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_clip_unknown_camera_returns_none_without_query() -> (
+    None
+):
+    service = BlinkService("user@example.com", "pw")
+    blink = _make_blink_mock(cameras={})
+    blink.get_videos_metadata = AsyncMock()
+    service._blink = blink
+
+    result = await service.get_latest_clip("Ghost")
+
+    assert result is None
+    blink.get_videos_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -449,7 +541,29 @@ def test_is_connected_false_when_cameras_empty() -> None:
     assert service.is_connected is False
 
 
-# --- Locking (codereview.md H-1) ---
+def test_has_camera_true_for_known_camera() -> None:
+    service = BlinkService("user@example.com", "pw")
+    blink = _make_blink_mock(cameras={"Backyard": _make_camera("Backyard")})
+    service._blink = blink
+
+    assert service.has_camera("Backyard") is True
+
+
+def test_has_camera_false_for_unknown_camera() -> None:
+    service = BlinkService("user@example.com", "pw")
+    blink = _make_blink_mock(cameras={"Backyard": _make_camera("Backyard")})
+    service._blink = blink
+
+    assert service.has_camera("Nonexistent") is False
+
+
+def test_has_camera_without_connection_raises_runtime_error() -> None:
+    service = BlinkService("user@example.com", "pw")
+    with pytest.raises(RuntimeError):
+        service.has_camera("Backyard")
+
+
+# --- Locking ---
 
 
 @pytest.mark.asyncio
@@ -488,7 +602,7 @@ async def test_refresh_and_snapshot_do_not_run_concurrently() -> None:
     )
 
 
-# --- Timeouts (codereview.md H-2) ---
+# --- Timeouts ---
 
 
 @pytest.mark.asyncio
@@ -529,7 +643,7 @@ async def test_connect_times_out_raises_blink_timeout_error() -> None:
         await service.connect()
 
 
-# --- Credential file permissions (codereview.md H-5) ---
+# --- Credential file permissions ---
 
 
 @pytest.mark.asyncio
@@ -545,7 +659,7 @@ async def test_save_credentials_restricts_file_permissions() -> None:
         mock_chmod.assert_called_once_with(BlinkService.CREDENTIALS_FILE, 0o600)
 
 
-# --- Motion event camera filtering (codereview.md M-2) ---
+# --- Motion event camera filtering ---
 
 
 @pytest.mark.asyncio

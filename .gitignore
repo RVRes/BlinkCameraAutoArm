@@ -4,6 +4,7 @@ blink_credentials.json
 venv
 .venv
 .idea
+.claude
 __pycache__
 *.pyc
 *.tmp

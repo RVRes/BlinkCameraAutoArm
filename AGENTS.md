@@ -16,11 +16,10 @@ and clips.
 **Runtime:** Python 3.10+ (targeted `py310`; deployed under Python 3.14 CPython)
 **Architecture:** Flat module structure — no packages, no `__init__.py`, all source files at root.
 
-`PLAN.md` and `STATUS.md` are gitignored, local-only planning/progress notes — they may not exist
-in every checkout. If present, `PLAN.md` has the full design rationale (root causes of the
-pre-rewrite breakage, module contracts, authentication flow, and test strategy) for historical
-context beyond what's summarized here, and `STATUS.md` tracks implementation progress across
-sessions.
+`STATUS.md` is a gitignored, local-only progress notes file — it may not exist in every checkout.
+It tracks implementation progress across sessions, including any `PLAN_FIX.md`-style bug-fix/
+enhancement backlog that may exist for the current work cycle (also gitignored, local-only, and
+removed once fully implemented per its own closing-phase instructions once one exists).
 
 ---
 
@@ -56,7 +55,7 @@ Required `.env` variables (see `.env_example`):
 Mutable runtime configuration (monitored IPs, controlled cameras, intervals, motion-alert
 toggle) lives in `config.json`, created with empty defaults on first run and thereafter managed
 via Telegram commands (see `README.md`). **Never edit `.env` to change monitored IPs or cameras
-after first run** — use `/camerabot ips add|remove` and `/camerabot cameras add|remove` instead;
+after first run** — use `/cambot ips add|remove` and `/cambot cameras add|remove` instead;
 manual `.env` edits are ignored once `config.json` exists.
 
 ---
@@ -256,7 +255,7 @@ written to `config.json`.
   `AppConfig` in `config.py`, `AppState` in `state.py`.
 - **`python-telegram-bot` v21 Application builder pattern** — register handlers via
   `application.add_handler(CommandHandler(...))`. All commands are routed through a single
-  `/camerabot <noun> [verb] [args...]` entry point in `TelegramBot.handle_command`.
+  `/cambot <noun> [verb] [args...]` entry point in `TelegramBot.handle_command`.
 - **Every Telegram handler is authorization-gated** via `TelegramBot._is_authorized()` — checks
   both `chat_id` and `allowed_user_id` from `.env`. Never add a handler that skips this check.
 
@@ -271,7 +270,7 @@ written to `config.json`.
 | `state.py` | `AppState` — runtime-only cross-task signals, passed by reference, never persisted |
 | `presence_monitor.py` | `PresenceMonitor` — async ping-based IP presence tracking with sliding-window tolerance |
 | `blink_service.py` | `BlinkService` — async wrapper around blinkpy (auth/2FA, camera arm/disarm, snapshots, clips, motion events) |
-| `telegram_bot.py` | `TelegramBot` — authorization-gated `/camerabot` command router and proactive notification sender |
+| `telegram_bot.py` | `TelegramBot` — authorization-gated `/cambot` command router and proactive notification sender |
 | `tests/` | Full pytest suite, one `test_<module>.py` per module, all external I/O mocked |
 | `config.json` | Gitignored; mutable runtime config (IPs, cameras, intervals) — created with empty defaults on first run, managed via Telegram commands thereafter |
 | `requirements.txt` | Pinned runtime dependencies (deployed to the router) |
@@ -282,7 +281,8 @@ written to `config.json`.
 | `test_task.py` | Manual cron/syslog smoke-test script — NOT part of the pytest suite |
 | `check_running_blink_auto_arm.sh` | Cron watchdog (syslog output) |
 | `S05crond` | Entware crond init service script |
-| `PLAN.md` | Gitignored, local-only design document for the rewrite (may not exist in every checkout) — module contracts, auth flow detail, test strategy |
+| `STATUS.md` | Gitignored, local-only progress notes — tracks implementation progress across sessions |
+| `PLAN_FIX.md` | Gitignored, local-only bug-fix/enhancement backlog (may not exist in every checkout) — removed once fully implemented per its own closing-phase instructions |
 
 ---
 
@@ -304,3 +304,22 @@ written to `config.json`.
 - There is **no CI pipeline**. Validate changes locally: `black --check . && ruff check . &&
   pytest -v`, and manually test against a real `.env` + Blink account when touching
   `blink_service.py` or the auth flow.
+- **Never reference internal AI/agent planning documents** (e.g. `PLAN_FIX.md`, `STATUS.md`, or
+  any past equivalent such as the now-removed `PLAN.md`/`codereview.md`) from source code,
+  docstrings, code comments, test names/docstrings, `README.md`, or commit messages. These are
+  temporary, gitignored, session-local working documents for agents — never a permanent part of
+  the codebase's own documentation or history. It is fine to mention them here in `AGENTS.md`
+  (which is itself agent-facing guidance) when describing the current workflow, but nowhere else.
+- **`README.md` must be self-contained and not cite `AGENTS.md` as the source of a specific
+  instruction** (e.g. "per `AGENTS.md`'s ... notes") — `README.md` is user-facing documentation;
+  `AGENTS.md` is agent-facing guidance for a different audience with a different lifecycle, and a
+  user reading `README.md` should never need to open `AGENTS.md` to understand an instruction
+  `README.md` itself gave them. Restate the needed content directly in `README.md` instead of
+  pointing at `AGENTS.md`. (The reverse — `AGENTS.md` pointing to `README.md`, or a single, generic
+  "see `AGENTS.md` for code style/architecture conventions" pointer at the end of `README.md`'s
+  Development section — is fine; the rule is specifically against citing `AGENTS.md` as the
+  authority for a piece of content inline within an instructional step.)
+- **Narrow optional service state before use.** `BlinkService._blink` is `Blink | None`; every
+  method that needs it must call `_require_blink()` once and use the returned local variable.
+  Never suppress, dismiss, or label nullability diagnostics as pre-existing: fix the access and
+  add a disconnected-state regression test when appropriate.

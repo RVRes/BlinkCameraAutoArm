@@ -18,8 +18,8 @@ from telegram_bot import TelegramBot
 
 _LOGGER = logging.getLogger(__name__)
 
-# Backoff bounds for repeated Blink connection failures (codereview.md
-# M-1) — capped exponential backoff with jitter, reset after success.
+# Backoff bounds for repeated Blink connection failures — capped
+# exponential backoff with jitter, reset after success.
 _BACKOFF_BASE_SECONDS = 30
 _BACKOFF_MAX_SECONDS = 1800
 # Minimum time between repeated "still can't connect" notifications while
@@ -36,13 +36,13 @@ class LoopContext:
 
     last_motion_seen: dict[str, str | None] = field(default_factory=dict)
     motion_alerts_primed: bool = False
-    # Connection-failure backoff/notification bookkeeping (M-1).
+    # Connection-failure backoff/notification bookkeeping.
     connect_failure_count: int = 0
     next_connect_attempt_time: float = 0.0
     last_connect_failure_notify_time: float = 0.0
-    # Last-observed presence, for transition-only logging (codereview.md
-    # L-3) — avoids repeating an unchanged "away"/"home" line every
-    # single iteration while still logging every actual change.
+    # Last-observed presence, for transition-only logging — avoids
+    # repeating an unchanged "away"/"home" line every single iteration
+    # while still logging every actual change.
     last_presence: Presence | None = None
 
 
@@ -64,16 +64,16 @@ async def run_iteration(
     bot: TelegramBot,
     ctx: LoopContext,
 ) -> None:
-    """Run a single main-loop iteration. See PLAN.md's main loop
-    pseudocode for the authoritative description of this logic.
+    """Run a single main-loop iteration: 2FA handling, Blink connection
+    (re)establishment, periodic refresh, presence-based auto arm/disarm,
+    and motion alerts.
     """
     if not state.is_app_enabled:
         return
 
-    # Health signal (codereview.md L-3): record that this iteration
-    # actually ran, regardless of what it does below, so /camerabot
-    # status can distinguish a live-but-wedged process from one that's
-    # genuinely making progress.
+    # Health signal: record that this iteration actually ran, regardless
+    # of what it does below, so /cambot status can distinguish a
+    # live-but-wedged process from one that's genuinely making progress.
     state.time_of_last_iteration = time.time()
 
     # --- 2FA completion ---
@@ -82,8 +82,8 @@ async def run_iteration(
             # A 2FA challenge is outstanding and no code has arrived yet.
             # Do NOT fall through to connect() — that would replace the
             # Blink object holding the pending challenge state, silently
-            # invalidating it and forcing a fresh 2FA request (see
-            # codereview.md CR-1). Simply wait for the next iteration.
+            # invalidating it and forcing a fresh 2FA request. Simply
+            # wait for the next iteration.
             return
         code = state.received_2fa_code
         state.received_2fa_code = None
@@ -118,7 +118,7 @@ async def run_iteration(
             ctx.next_connect_attempt_time = 0.0
             state.is_2fa_pending = True
             _LOGGER.info("Blink API requires 2FA.")
-            await bot.send_message("2FA required. Send: /camerabot 2fa <code>")
+            await bot.send_message("2FA required. Send: /cambot 2fa <code>")
             return
         else:  # ConnectResult.FAILED
             ctx.connect_failure_count += 1
@@ -149,6 +149,23 @@ async def run_iteration(
         _LOGGER.exception("Failed to refresh Blink data.")
         return
 
+    # --- Stale camera reconciliation ---
+    # A camera renamed (or deleted) on the Blink side leaves a stale
+    # name in cfg.controlled_cameras — remove it so auto-arm/disarm
+    # doesn't silently stop working for that camera, and tell the user
+    # so they can re-add it under its new name if applicable. This runs
+    # on every periodic refresh (bot.app_cfg is the same AppConfig
+    # object as `cfg`, so the removal is immediately visible below), in
+    # addition to the on-demand `/cambot cameras refresh` command.
+    stale = bot.reconcile_stale_cameras()
+    if stale:
+        await bot.send_message(
+            "Camera(s) no longer found on the Blink account — removed "
+            f"from auto-arm: {', '.join(stale)}. If renamed rather than "
+            "deleted, re-add under the new name: /cambot cameras add "
+            "<name>."
+        )
+
     # --- Update camera status cache (display only) ---
     for cam in blink.list_all_cameras():
         state.camera_armed_status[cam.name] = cam.armed
@@ -166,9 +183,9 @@ async def run_iteration(
     state.ip_ping_status = monitor.get_status()
 
     if presence is not ctx.last_presence:
-        # Log every actual presence transition (codereview.md L-3), not
-        # every iteration's unchanged reading — keeps logs scannable for
-        # router diagnosis while still surfacing every state change.
+        # Log every actual presence transition, not every iteration's
+        # unchanged reading — keeps logs scannable for router diagnosis
+        # while still surfacing every state change.
         _LOGGER.info(
             "Presence transition: %s -> %s.",
             ctx.last_presence.value if ctx.last_presence else "startup",
@@ -179,7 +196,7 @@ async def run_iteration(
     if presence is Presence.UNKNOWN:
         # No monitored IPs (or no reliable reading yet) — never treat
         # this as "nobody home". Skip auto arm/disarm entirely rather
-        # than defaulting to away (see codereview.md CR-2).
+        # than defaulting to away.
         if cfg.controlled_cameras:
             _LOGGER.warning(
                 "Presence is unknown (no monitored IPs configured?) — "
@@ -236,8 +253,8 @@ async def run_iteration(
     # --- Motion alerts ---
     if cfg.motion_alerts_enabled:
         # Scope motion polling to controlled cameras only — matches the
-        # documented behavior (see codereview.md M-2). An uncontrolled
-        # camera must never generate a proactive alert.
+        # documented behavior. An uncontrolled camera must never
+        # generate a proactive alert.
         events = await blink.get_new_motion_events(
             ctx.last_motion_seen, camera_names=cfg.controlled_cameras
         )
@@ -277,11 +294,23 @@ async def run_main_loop(
             _LOGGER.exception("Unhandled error in main loop iteration.")
 
 
+def _configure_logging() -> None:
+    """Configure root logging from LOG_LEVEL, then silence
+    python-telegram-bot's internal httpx/httpcore per-request INFO logs
+    (one line every long-poll cycle, ~10s) — routine polling noise, not
+    an app-level notification. App-originated log lines use this
+    project's own _LOGGER = logging.getLogger(__name__) calls and are
+    unaffected by these two library-specific overrides."""
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), stream=sys.stdout)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 async def main() -> None:
     """Load config/state, wire up services, and run the app until
     stopped (SIGINT/SIGTERM triggers a graceful shutdown)."""
     load_dotenv()
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), stream=sys.stdout)
+    _configure_logging()
 
     config = Config()
     cfg = config.load()

@@ -51,7 +51,7 @@ async def test_check_all_mixed_results_any_online_ip_keeps_home() -> None:
 @pytest.mark.asyncio
 async def test_check_all_with_no_monitored_ips_returns_unknown() -> None:
     """An empty monitored-IP list must never be interpreted as 'away' —
-    see codereview.md CR-2. Fail closed to 'unknown' instead."""
+    fail closed to 'unknown' instead."""
     monitor = PresenceMonitor([], absence_checks=3)
     result = await monitor.check_all()
     assert result is Presence.UNKNOWN
@@ -66,14 +66,48 @@ async def test_check_all_after_removing_last_ip_returns_unknown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ping_timeout_is_treated_as_unknown_not_offline() -> None:
-    """A ping that times out must not count as an absence strike — see
-    codereview.md CR-3. It should be given the same benefit of the
-    doubt as an unreached absence_checks threshold."""
+async def test_ping_timeout_is_treated_as_offline_not_unknown() -> None:
+    """A ping that times out (no reply within PING_TIMEOUT_SECONDS) is a
+    normal, common result for a genuinely offline/unreachable host — it
+    must be counted as absence evidence (False/offline), not given
+    unconditional benefit of the doubt as 'unknown'."""
     monitor = PresenceMonitor(["192.168.0.1"], absence_checks=1)
     with patch(
         "presence_monitor.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="ping", timeout=5),
+    ):
+        result = await monitor.check_all()
+    assert result is Presence.AWAY
+    assert monitor.get_status()["192.168.0.1"] is False
+
+
+@pytest.mark.asyncio
+async def test_sustained_timeouts_flip_single_ip_to_away() -> None:
+    """Sustained timeouts across absence_checks consecutive cycles must
+    flip the only monitored IP (and thus overall presence) to AWAY."""
+    monitor = PresenceMonitor(["192.168.0.1"], absence_checks=3)
+    with patch(
+        "presence_monitor.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="ping", timeout=5),
+    ):
+        await monitor.check_all()  # 1st timeout
+        await monitor.check_all()  # 2nd timeout
+        result = await monitor.check_all()  # 3rd -> nobody home
+    assert result is Presence.AWAY
+    assert monitor.get_status()["192.168.0.1"] is False
+
+
+@pytest.mark.asyncio
+async def test_ping_os_error_is_treated_as_unknown_within_grace_window() -> (
+    None
+):
+    """A missing `ping` executable (OSError) is a genuine 'we don't know'
+    case and is still given the benefit of the doubt, but only up to
+    absence_checks consecutive occurrences (see next test)."""
+    monitor = PresenceMonitor(["192.168.0.1"], absence_checks=3)
+    with patch(
+        "presence_monitor.subprocess.run",
+        side_effect=OSError("no such file"),
     ):
         result = await monitor.check_all()
     assert result is Presence.HOME
@@ -81,16 +115,22 @@ async def test_ping_timeout_is_treated_as_unknown_not_offline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ping_os_error_is_treated_as_unknown_not_offline() -> None:
-    """A missing `ping` executable (OSError) must not be treated as
-    'offline' — see codereview.md CR-3."""
-    monitor = PresenceMonitor(["192.168.0.1"], absence_checks=1)
+async def test_persistent_os_errors_eventually_count_as_absence() -> None:
+    """A real safety net: persistent 'could not run ping at all' (OSError)
+    results must not block AWAY detection forever — once the
+    consecutive-unknown streak exceeds absence_checks, unknowns start
+    counting as absence evidence, and once that many such readings have
+    filled the sliding window, presence flips to AWAY."""
+    monitor = PresenceMonitor(["192.168.0.1"], absence_checks=2)
     with patch(
         "presence_monitor.subprocess.run",
         side_effect=OSError("no such file"),
     ):
-        result = await monitor.check_all()
-    assert result is Presence.HOME
+        await monitor.check_all()  # 1st unknown -> benefit of doubt
+        await monitor.check_all()  # 2nd unknown -> still within grace
+        await monitor.check_all()  # 3rd -> streak now exceeds grace
+        result = await monitor.check_all()  # 4th -> window is all-absence
+    assert result is Presence.AWAY
     assert monitor.get_status()["192.168.0.1"] is None
 
 

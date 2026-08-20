@@ -161,7 +161,7 @@ def test_save_does_not_corrupt_existing_file_on_write_failure(
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-# --- Schema validation (codereview.md H-3) ---
+# --- Schema validation ---
 
 
 def test_load_malformed_json_raises_value_error(
@@ -330,7 +330,6 @@ def test_write_config_file_fsyncs_and_restricts_permissions(
 
 def test_default_config_file_is_absolute_path_next_to_module() -> None:
     """config.json must resolve to an absolute path derived from this
-    module's location, independent of the process's cwd — see
-    codereview.md CR-4."""
+    module's location, independent of the process's cwd."""
     assert os.path.isabs(Config.CONFIG_FILE)
     assert os.path.basename(Config.CONFIG_FILE) == "config.json"

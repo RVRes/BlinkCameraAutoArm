@@ -11,7 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 # Application data directory — resolved from this file's location so that
 # config.json is always found/created here regardless of the process's
 # current working directory (e.g. when started by a cron watchdog that
-# does not `cd` into the project first). See codereview.md CR-4.
+# does not `cd` into the project first).
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_FILE = APP_DIR / "config.json"
 
@@ -98,7 +98,7 @@ class Config:
 
         Raises ValueError if the fields on `cfg` fail schema validation —
         callers should validate/build a candidate config before mutating
-        any long-lived object (see codereview.md H-4).
+        any long-lived object.
         """
         data = {name: getattr(cfg, name) for name in self._MUTABLE_FIELDS}
         data = self._validate_mutable(data)
@@ -133,9 +133,9 @@ class Config:
         rename), then fsync the containing directory and restrict file
         permissions to owner-only where supported.
 
-        Durability/permissions per codereview.md M-3 and H-5: a bare
-        os.replace() protects readers from a partial file but does not
-        survive sudden power loss on the router target without fsync.
+        Durability/permissions: a bare os.replace() protects readers
+        from a partial file but does not survive sudden power loss on
+        the router target without fsync.
         """
         directory = os.path.dirname(self.config_file) or "."
         fd, tmp_path = tempfile.mkstemp(
@@ -171,7 +171,7 @@ class Config:
         Enforces known fields only, correct types, unique valid IP
         literals, unique non-empty camera names, and bounded numeric
         ranges. Raises ValueError with a descriptive message on the
-        first violation found. See codereview.md H-3.
+        first violation found.
         """
         known_fields = set(Config._MUTABLE_FIELDS)
         unknown = set(data) - known_fields
@@ -287,7 +287,7 @@ def _validate_unique_ip_list(value: object, field_name: str) -> list[str]:
             ipaddress.ip_address(item)
         except ValueError as e:
             raise ValueError(
-                f"'{field_name}' contains an invalid IP address: " f"{item!r}."
+                f"'{field_name}' contains an invalid IP address: {item!r}."
             ) from e
         if item in seen:
             raise ValueError(

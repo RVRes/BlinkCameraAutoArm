@@ -13,7 +13,7 @@
 # matters. The `mkdir` lock (below) is only taken on the rarer path where
 # a start actually looks necessary.
 #
-# Locking (codereview.md M-4): overlapping cron invocations (e.g. a slow
+# Locking: overlapping cron invocations (e.g. a slow
 # prior run still executing when the next minute's invocation fires) are
 # serialized with an atomic `mkdir` lock — the classic portable idiom for
 # POSIX sh/busybox ash, which has no `flock` builtin. Liveness of the app

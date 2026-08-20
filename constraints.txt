@@ -1,4 +1,4 @@
-# Exact-version constraints for reproducible installs (codereview.md M-7).
+# Exact-version constraints for reproducible installs.
 #
 # This pins every runtime dependency (direct + transitive) to the exact
 # version verified against the test suite, so `pip install` cannot pull in
